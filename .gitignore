@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+
+# Build and packaging output
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.log
+
+# Reports and generated scan output
+reports/
+*.html
+*.json
+!gqlx/payloads/*.json
+*-report.json
+*-report.html
+*-report.md
+*-schema.json
+test-enum*.json
+test-scan.json
+test-schema.json
+
+# Sensitive client and pentest data
+stichhtest/
+*.pdf
