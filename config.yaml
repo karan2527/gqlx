@@ -7,7 +7,7 @@ http:
   max_retries: 3
   rate_limit: 0.0          # seconds between requests (0 = unlimited)
   follow_redirects: true
-  verify_ssl: false
+  verify_ssl: true
   user_agent: "gqlx/1.0 (GraphQL Security Scanner; +https://github.com/karan2527/gqlx)"
 
 scan:

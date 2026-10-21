@@ -17,7 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "max_retries": 3,
     "rate_limit": 0.0,
     "max_depth": 3,
-    "verify_ssl": False,
+    "verify_ssl": True,
     "follow_redirects": True,
     "user_agent": "gqlx/1.0 (GraphQL Security Scanner)",
     "dos_max_depth": 15,
@@ -46,11 +46,35 @@ def load_config(path: str | None = None) -> dict[str, Any]:
             try:
                 with p.open() as f:
                     user = yaml.safe_load(f) or {}
-                # Flatten nested sections (http.timeout -> timeout)
-                for section in ("http", "scan", "dos", "output", "logging"):
-                    if section in user and isinstance(user[section], dict):
-                        cfg.update(user.pop(section))
-                cfg.update(user)
+                section_maps = {
+                    "http": {
+                        "timeout": "timeout",
+                        "concurrency": "concurrency",
+                        "max_retries": "max_retries",
+                        "rate_limit": "rate_limit",
+                        "verify_ssl": "verify_ssl",
+                        "follow_redirects": "follow_redirects",
+                        "user_agent": "user_agent",
+                    },
+                    "scan": {"max_depth": "max_depth", "id_range": "id_range"},
+                    "dos": {
+                        "max_depth": "dos_max_depth",
+                        "max_aliases": "dos_max_aliases",
+                        "max_batch": "dos_max_batch",
+                    },
+                }
+                for section, keys in section_maps.items():
+                    values = user.get(section)
+                    if isinstance(values, dict):
+                        for source, target in keys.items():
+                            if source in values:
+                                cfg[target] = values[source]
+                for key in ("format", "include_info", "level"):
+                    for section in ("output", "logging"):
+                        values = user.get(section)
+                        if isinstance(values, dict) and key in values:
+                            cfg[key] = values[key]
+                cfg.update({k: v for k, v in user.items() if not isinstance(v, dict)})
                 logger.debug("config_loaded", path=str(p))
                 break
             except yaml.YAMLError as exc:

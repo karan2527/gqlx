@@ -89,8 +89,9 @@ class Scanner:
                 intro_result = await introspector.run()
 
             parser = SchemaParser()
-            result.gql_schema = parser.parse(intro_result.raw)
+            result.gql_schema = parser.parse(intro_result.raw, intro_result.method)
             result.introspection_enabled = intro_result.enabled
+            result.discovery_method = intro_result.method
 
             if intro_result.method == "none":
                 console.print("[yellow]! Schema discovery failed -- limited testing possible[/]")
@@ -105,11 +106,15 @@ class Scanner:
             modules = _resolve_modules(self.config.modules, self.config.aggressive)
             if not modules:
                 logger.error("no_modules_selected")
+                result.error = "No modules selected"
+                result.finished_at = datetime.now(UTC)
                 return result
 
             all_findings = await self._run_modules(modules, ctx)
             result.findings = assign_scores(all_findings)
-            result.modules_run = [m.name for m in modules]
+            result.modules_run = [
+                name for name, status in result.module_status.items() if status == "completed"
+            ]
             result.finished_at = datetime.now(UTC)
 
         self._print_summary(result)
@@ -120,7 +125,8 @@ class Scanner:
         modules: list[BaseModule],
         ctx: RunContext,
     ) -> list[Any]:
-        findings = []
+        findings: list[Any] = []
+        ctx.result.module_status.update({module.name: "pending" for module in modules})
 
         with Progress(
             SpinnerColumn(),
@@ -136,9 +142,12 @@ class Scanner:
                     logger.debug("module_start", module=module.name)
                     result = await module.run(ctx)
                     logger.debug("module_done", module=module.name, findings=len(result))
+                    ctx.result.module_status[module.name] = "completed"
                     return result
                 except Exception as exc:  # noqa: BLE001
                     logger.error("module_error", module=module.name, error=str(exc))
+                    ctx.result.module_status[module.name] = "failed"
+                    ctx.result.module_errors[module.name] = type(exc).__name__
                     return []
                 finally:
                     progress.advance(task)
@@ -187,3 +196,6 @@ class Scanner:
             f"\n[dim]Scanned [bold]{result.target}[/] in {elapsed:.1f}s | "
             f"{len(result.findings)} total findings[/]"
         )
+        failed = list(result.module_errors)
+        if failed:
+            console.print(f"[yellow]Modules failed: {', '.join(failed)}. Results are partial.[/]")

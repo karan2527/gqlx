@@ -240,7 +240,7 @@ class TenantIsolationModule(BaseModule):
                 args_parts.append(f"{arg.name}: 10")
             elif base == "Boolean":
                 args_parts.append(f"{arg.name}: true")
-            elif not base[0].isupper():  # String/ID scalar
+            elif base in ("String", "ID", "AWSJSON", "AWSEmail"):
                 args_parts.append(f'{arg.name}: "test"')
 
         query = f"{{ {field.name}({', '.join(args_parts)}){selection} }}"

@@ -3,10 +3,10 @@
 ## GraphQL Security Testing Framework
 
 `gqlx` is a command-line security testing framework for GraphQL APIs. It
-discovers a target's GraphQL schema, maps its queries and mutations, sends
-carefully selected security test requests, and produces a report that can be
-reviewed by developers, security engineers, and authorized penetration
-testers.
+discovers a target's GraphQL schema, maps its queries and mutations, generates
+type-aware GraphQL operations, sends carefully selected security test
+requests, and produces a report that can be reviewed by developers, security
+engineers, and authorized penetration testers.
 
 It supports standard GraphQL APIs as well as common AWS AppSync and Cognito
 deployments.
@@ -27,14 +27,23 @@ A typical scan follows this workflow:
    This lets the scanner test real application fields instead of sending only
    generic malformed requests.
 4. **Runs the selected security modules** against string, ID, URL, and
-   authentication-related fields.
+   authentication-related fields. Modules are bounded by the configured
+   concurrency and rate limit.
 5. **Confirms potential vulnerabilities** using response, timing, or
    cross-identity comparisons where possible.
-6. **Writes a report** in HTML, JSON, or Markdown format.
+6. **Writes a report** in HTML, JSON, or Markdown format. Module failures are
+   recorded explicitly and partial results are reported as partial.
 
-If introspection is disabled, `gqlx` can still use bypass and wordlist-based
-discovery paths where applicable. Results identify the discovery method so
-that the report's coverage is clear.
+If introspection is disabled, `gqlx` tries the following discovery methods:
+
+1. Full introspection.
+2. Header-based introspection bypass probes.
+3. Partial introspection.
+4. Wordlist-based field discovery.
+
+Results identify the discovery method as `full`, `bypass`, `partial`,
+`wordlist`, or `none`, so a report does not imply complete schema coverage
+when discovery was incomplete.
 
 ## Detection philosophy
 
@@ -131,7 +140,7 @@ gqlx scan https://target.example/graphql `
 ### Provide a second identity for authorization testing
 
 BOLA, IDOR, and tenant-isolation checks require two identities for a meaningful
-cross-user comparison. Supply the second bearer token with `--token-b`:
+cross-user comparison. Supply the second token with `--token-b`:
 
 ```powershell
 gqlx scan https://target.example/graphql `
@@ -144,6 +153,25 @@ gqlx scan https://target.example/graphql `
 
 The first identity is used as the baseline. The second identity is used to
 check whether data belonging to the first identity or tenant is exposed.
+
+The authentication scheme is inherited from the primary `Authorization`
+header:
+
+- The primary `Authorization` format is reused for the second identity.
+- A primary value without a prefix remains a value without a prefix.
+- A prefix included with `--token-b` is normalized before the request.
+The actual second token is retained only in the request configuration. It is
+not printed or written to reports by the identity-header helper.
+
+For cookie-authenticated identities, provide separate cookie strings:
+
+```powershell
+gqlx scan https://target.example/graphql `
+  -c "session=SESSION_A" `
+  --cookie-b "session=SESSION_B" `
+  --modules bola,tenant_isolation `
+  -o cookie-authorization-report.html
+```
 
 ### Use cookies or a proxy
 
@@ -186,6 +214,7 @@ Important options:
 | `-H, --header TEXT` | Add an HTTP header; repeatable |
 | `--token-b TEXT` | Supply a second bearer token for cross-identity checks |
 | `-c, --cookie TEXT` | Add a cookie string |
+| `--cookie-b TEXT` | Add cookies for the second identity |
 | `-x, --proxy TEXT` | Use an HTTP or HTTPS proxy |
 | `-m, --modules TEXT` | Comma-separated module names |
 | `-o, --output TEXT` | Write the report to a file |
@@ -197,6 +226,10 @@ Important options:
 | `--aggressive` | Enable resource-intensive DoS checks |
 | `-v, --verbose` | Enable verbose logging |
 | `--config TEXT` | Load a custom YAML configuration file |
+
+`--timeout`, `--workers`, and `--rate-limit` reject invalid negative or zero
+values where those values would be unsafe. TLS certificate verification is
+enabled by default and can be configured through YAML.
 
 View the complete option list with:
 
@@ -212,11 +245,20 @@ Discovers and prints or saves the target schema:
 gqlx introspect [OPTIONS] URL
 ```
 
+The command reports the discovery method and the number of parsed queries,
+mutations, subscriptions, and types. It does not run vulnerability modules.
+
 ### `enum`
 
 Performs deeper GraphQL enumeration by sending discovered operations and
 mapping their behavior. Use it only on authorized targets because it can
 generate substantially more requests than a normal schema discovery.
+
+Enumeration generates selections for object and list return types and
+constructs required scalar, enum, list, and input-object arguments. A
+`null` object result or empty list is not treated as accessible data. Use
+`--mutations` only when mutation execution is explicitly approved; mutation
+operations can change application state.
 
 ### `autopwn`
 
@@ -233,6 +275,10 @@ AWS Cognito and AppSync deployments. Review its help output before use:
 ```powershell
 gqlx fullpwn --help
 ```
+
+`fullpwn` may prompt for authentication data and is intended for supported
+AWS Cognito/AppSync workflows. Do not pass real credentials in shell history
+or bug reports.
 
 ## Security modules
 
@@ -257,6 +303,11 @@ gqlx scan https://target.example/graphql --aggressive --modules dos
 Aggressive testing can place additional load on the target. Obtain approval
 for that scope separately before enabling it.
 
+When no `--modules` list is supplied, the scanner resolves the registered
+modules and skips modules marked as aggressive unless `--aggressive` is set.
+Use `gqlx list-modules` to inspect the registry and each module's aggressive
+status.
+
 ## Reports and findings
 
 Reports can be written in three formats:
@@ -268,8 +319,9 @@ gqlx scan https://target.example/graphql -f markdown -o report.md
 ```
 
 Reports contain the target, scan timestamps, discovery status, modules run,
-findings, evidence, request payloads where available, confidence, severity,
-and remediation guidance.
+module status, failed-module types, findings, evidence, request payloads where
+available, confidence, severity, and remediation guidance. Exception details
+are not included in the structured module-failure fields.
 
 The JSON format is useful for CI pipelines and custom processing. HTML is
 intended for interactive review, while Markdown is convenient for tickets and
@@ -281,8 +333,10 @@ The repository includes [`config.yaml`](config.yaml) with defaults for:
 
 - HTTP timeout, concurrency, retries, redirects, TLS verification, and rate
   limiting
+- User agent and proxy settings
 - Schema traversal depth and BOLA ID probing
-- Conservative DoS limits
+- Independent scan and DoS depth limits
+- Conservative DoS alias and batch limits
 - Report format and informational findings
 - Logging level
 
@@ -293,6 +347,16 @@ gqlx scan https://target.example/graphql --config .\my-config.yaml
 ```
 
 CLI options take precedence over configuration-file values.
+
+The scan traversal depth and DoS payload depth are independent settings:
+
+```yaml
+scan:
+  max_depth: 3
+
+dos:
+  max_depth: 15
+```
 
 ## Local development and testing
 
@@ -307,8 +371,13 @@ The lab provides:
 
 - GraphQL endpoint: `http://127.0.0.1:8765/graphql`
 - Health endpoint: `http://127.0.0.1:8765/health`
-- Example queries for users and user IDs
-- An example mutation
+- `health`, `users`, and `user(id: ID!)` queries
+- Valid example user IDs `1` and `2`
+- An example `createNote(text: String!)` mutation
+
+The lab is intended for safe request and operation-generation checks. The
+example mutation should not be executed unless its side effects are
+specifically intended.
 
 In another PowerShell window, run:
 
@@ -325,8 +394,43 @@ pytest -q
 ruff check gqlx tests
 ruff format --check gqlx tests
 mypy gqlx
+python -m pip check
 python -m compileall -q gqlx local_graphql_lab.py
 ```
+
+The current regression baseline is 47 passing tests. These checks establish
+local correctness and packaging consistency; they do not prove that every
+security detector is accurate against a real production application.
+
+## Verification boundaries
+
+The project has been verified locally for:
+
+- Type-aware query and mutation construction.
+- Required scalar and input-object argument generation.
+- Null and empty-result classification.
+- Authorization-format and bare-token second-identity propagation using dummy credentials.
+- Second-identity cookie propagation.
+- HTTP timeout, retry, proxy, redirect, user-agent, concurrency, rate-limit,
+  and TLS configuration wiring.
+- Structured GraphQL error classification.
+- Explicit failed-module and partial-report handling.
+- JSON, Markdown, and HTML report generation.
+
+The following require an authorized target, suitable test accounts, or
+specialized infrastructure and are not established by the local test suite:
+
+- Real BOLA/IDOR or tenant-isolation vulnerability detection.
+- Cognito authentication success and failure flows.
+- SQL/NoSQL injection, command injection, SSTI, SSRF, or DoS impact against a
+  real service.
+- Production proxy behavior, TLS failures, redirect behavior, and rate-limit
+  impact.
+- Completeness of a target's wordlist or partial-discovery results.
+
+Treat findings as assessment evidence, not as proof that a target is secure.
+Manually validate tentative findings and any result obtained from partial,
+wordlist, or unavailable discovery.
 
 ## Project layout
 

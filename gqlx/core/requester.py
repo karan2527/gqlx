@@ -34,14 +34,15 @@ class Requester:
             resp = await req.graphql("{ __typename }")
     """
 
-    def __init__(self, config: ScanConfig, max_retries: int = 3) -> None:
+    def __init__(self, config: ScanConfig, max_retries: int | None = None) -> None:
         self.config = config
-        self.max_retries = max_retries
+        self.max_retries = max_retries if max_retries is not None else config.max_retries
         self._client: httpx.AsyncClient | None = None
         self._concurrency = asyncio.Semaphore(config.concurrency)
 
     async def __aenter__(self) -> Requester:
         merged_headers = {**_BASE_HEADERS, **self.config.headers}
+        merged_headers["User-Agent"] = self.config.user_agent
         proxy_arg: dict[str, Any] = {}
         if self.config.proxy:
             proxy_arg["proxy"] = self.config.proxy
@@ -50,8 +51,9 @@ class Requester:
             timeout=httpx.Timeout(self.config.timeout),
             headers=merged_headers,
             cookies=self.config.cookies,
-            follow_redirects=True,
-            verify=False,  # intentional â€” target certs are often self-signed in pentest
+            follow_redirects=self.config.follow_redirects,
+            verify=self.config.verify_ssl,
+            trust_env=False,
             **proxy_arg,
         )
         return self

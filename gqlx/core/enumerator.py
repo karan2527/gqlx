@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from gqlx.core.requester import Requester, RequestError
 from gqlx.utils.logger import get_logger
-from gqlx.utils.models import GraphQLArgument, GraphQLField
+from gqlx.utils.models import GraphQLArgument, GraphQLField, GraphQLSchema
 
 logger = get_logger(__name__)
 
@@ -98,9 +98,11 @@ class Enumerator:
         requester: Requester,
         org_id: str | None = None,
         concurrency: int = 5,
+        schema: GraphQLSchema | None = None,
     ) -> None:
         self.requester = requester
         self.org_id = org_id
+        self.schema = schema
         self._sem = asyncio.Semaphore(concurrency)
 
     async def run_all(
@@ -114,6 +116,8 @@ class Enumerator:
             total_queries=len(queries),
             total_mutations=len(mutations),
         )
+        if self.schema is None:
+            self.schema = GraphQLSchema(queries=queries, mutations=mutations)
 
         logger.info("enum_start", queries=len(queries), mutations=len(mutations))
 
@@ -163,8 +167,8 @@ class Enumerator:
                     status_code=resp.status_code,
                     response_body=body,
                     has_data=self._has_real_data(body, field.name),
-                    is_auth_error=self._is_auth_error(body),
-                    is_gql_error=self._is_gql_error(body),
+                    is_auth_error=self._is_auth_error(body, resp.status_code),
+                    is_gql_error=self._is_gql_error(body, resp.status_code),
                     sensitive_matches=self._find_sensitive(body),
                 )
             except (RequestError, Exception) as exc:
@@ -183,10 +187,11 @@ class Enumerator:
     def _build_query(self, field: GraphQLField, operation: str) -> str:
         """Build the most minimal valid query for a field."""
         args = self._build_args(field.args)
+        selection = self.schema.build_selection(field) if self.schema else ""
         op = "mutation" if operation == "mutation" else "query"
         if args:
-            return f"{op} {{ {field.name}({args}) }}"
-        return f"{op} {{ {field.name} }}"
+            return f"{op} {{ {field.name}({args}){selection} }}"
+        return f"{op} {{ {field.name}{selection} }}"
 
     def _build_args(self, args: list[GraphQLArgument]) -> str:
         """Fill required args with sensible test values."""
@@ -215,7 +220,13 @@ class Enumerator:
         if name_lower == "nexttoken":
             return "null"
 
-        # Boolean flags
+        if t.startswith("[") and t.endswith("]"):
+            inner = t[1:-1]
+            inner_arg = arg.model_copy(update={"type_name": inner})
+            value = self._default_value(inner_arg)
+            return f"[{value}]" if value is not None else None
+
+        # Built-in scalars
         if t == "Boolean":
             return "true"
 
@@ -223,17 +234,15 @@ class Enumerator:
         if t in ("Int", "Float"):
             return "1"
 
-        # Input object type â€” emit an empty object so the resolver at least runs.
-        # Fields like get_particular_user_details(input: UserInput) will get {}.
-        # This is intentionally minimal: it lets us probe whether auth is enforced
-        # even when we can't fully construct the payload.
-        if t[0].isupper():
-            return self._build_input_object(t)
-
-        # Generic string / ID
         if t in ("String", "ID", "AWSJSON", "AWSEmail"):
             return '"test"'
 
+        if self.schema and t in self.schema.types:
+            gql_type = self.schema.types[t]
+            if gql_type.kind == "ENUM":
+                return gql_type.enum_values[0] if gql_type.enum_values else None
+            if gql_type.kind == "INPUT_OBJECT":
+                return self._build_input_object(t)
         return None
 
     def _build_input_object(self, type_name: str) -> str:
@@ -241,6 +250,18 @@ class Enumerator:
         Build a best-effort value for a named input type.
         Tries common field names based on the type name; falls back to {}.
         """
+        if not self.schema:
+            return "{}"
+        input_type = self.schema.types.get(type_name)
+        if input_type and input_type.input_fields:
+            values = []
+            for field in input_type.input_fields:
+                value = self._default_value(field)
+                if field.is_required and value is None:
+                    return "{}"
+                if value is not None:
+                    values.append(f"{field.name}: {value}")
+            return "{" + ", ".join(values) + "}"
         name_lower = type_name.lower()
         # Email-based lookups (e.g. UserInput, GetUserInput)
         if "email" in name_lower or "user" in name_lower:
@@ -269,14 +290,34 @@ class Enumerator:
             return False
 
     @staticmethod
-    def _is_auth_error(body: str) -> bool:
-        body_lower = body.lower()
-        return any(h in body_lower for h in _AUTH_ERROR_HINTS)
+    def _is_auth_error(body: str, status_code: int = 200) -> bool:
+        if status_code in (401, 403):
+            return True
+        try:
+            parsed = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        errors = parsed.get("errors") if isinstance(parsed, dict) else None
+        if not isinstance(errors, list):
+            return False
+        return any(
+            any(h in str(error.get("message", "")).lower() for h in _AUTH_ERROR_HINTS)
+            for error in errors
+            if isinstance(error, dict)
+        )
 
     @staticmethod
-    def _is_gql_error(body: str) -> bool:
-        body_lower = body.lower()
-        return any(h in body_lower for h in _GQL_ERROR_HINTS)
+    def _is_gql_error(body: str, status_code: int = 200) -> bool:
+        try:
+            parsed = json.loads(body)
+        except (json.JSONDecodeError, TypeError):
+            return status_code in (400, 422)
+        if not isinstance(parsed, dict):
+            return True
+        errors = parsed.get("errors")
+        if not isinstance(errors, list):
+            return False
+        return bool(errors)
 
     @staticmethod
     def _find_sensitive(body: str) -> list[str]:

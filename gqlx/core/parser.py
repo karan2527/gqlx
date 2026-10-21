@@ -69,16 +69,18 @@ class SchemaParser:
     Also handles the synthetic 'wordlist' discovery format.
     """
 
-    def parse(self, raw: dict[str, Any]) -> GraphQLSchema:
+    def parse(self, raw: dict[str, Any], discovery_method: str = "full") -> GraphQLSchema:
         # Wordlist discovery produces a different structure
         if raw.get("_method") == "wordlist":
-            return self._parse_wordlist(raw)
+            schema = self._parse_wordlist(raw)
+            schema.discovery_method = "wordlist"
+            return schema
 
         schema_data: dict[str, Any] = (raw.get("data", {}) or {}).get("__schema", {}) or {}
 
         if not schema_data:
             logger.warning("parser_empty_schema")
-            return GraphQLSchema(raw=raw)
+            return GraphQLSchema(raw=raw, discovery_method=discovery_method)
 
         query_type = (schema_data.get("queryType") or {}).get("name", "Query")
         mutation_type = (schema_data.get("mutationType") or {}).get("name")
@@ -96,15 +98,18 @@ class SchemaParser:
 
             kind = type_def.get("kind", "OBJECT")
             raw_fields = type_def.get("fields") or []
+            raw_input_fields = type_def.get("inputFields") or []
             raw_enums = type_def.get("enumValues") or []
 
             parsed_fields = [_parse_field(f) for f in raw_fields]
+            parsed_input_fields = [_parse_argument(f) for f in raw_input_fields]
             enum_values = [ev.get("name", "") for ev in raw_enums]
 
             gql_type = GraphQLType(
                 name=name,
                 kind=kind,
                 fields=parsed_fields,
+                input_fields=parsed_input_fields,
                 enum_values=enum_values,
                 description=type_def.get("description"),
             )
@@ -123,7 +128,7 @@ class SchemaParser:
             subscriptions=subscriptions,
             types=types,
             raw=raw,
-            discovery_method="full",
+            discovery_method=discovery_method,
         )
         logger.info(
             "schema_parsed",

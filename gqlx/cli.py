@@ -30,6 +30,7 @@ AVAILABLE_MODULES = [
     "auth",
     "dos",
     "ssrf",
+    "tenant_isolation",
 ]
 
 
@@ -56,6 +57,8 @@ def _second_identity_headers(token: str | None, primary_headers: dict[str, str])
     if token.lower().startswith("bearer "):
         token = token[7:]
     token = "".join(token.split())  # drop newlines inside a pasted token body
+    if not token:
+        return {}
 
     primary_auth = (
         primary_headers.get("Authorization") or primary_headers.get("authorization") or ""
@@ -87,6 +90,7 @@ def cli() -> None:
     help=("Second-identity bearer token enables confirmed cross-user BOLA/tenant checks"),
 )
 @click.option("-c", "--cookie", default=None, help="Cookie string: 'session=abc; csrf=xyz'")
+@click.option("--cookie-b", default=None, help="Second-identity cookie string")
 @click.option("-x", "--proxy", default=None, help="HTTP/HTTPS proxy URL: 'http://127.0.0.1:8080'")
 @click.option(
     "-m",
@@ -102,10 +106,26 @@ def cli() -> None:
     type=click.Choice(["html", "json", "markdown"]),
     help="Output format",
 )
-@click.option("-t", "--timeout", default=30, type=int, help="Request timeout in seconds")
-@click.option("-w", "--workers", default=10, type=int, help="Max concurrent requests")
 @click.option(
-    "-r", "--rate-limit", default=0.0, type=float, help="Seconds between requests (0=unlimited)"
+    "-t",
+    "--timeout",
+    default=30,
+    type=click.IntRange(min=1),
+    help="Request timeout in seconds",
+)
+@click.option(
+    "-w",
+    "--workers",
+    default=10,
+    type=click.IntRange(min=1),
+    help="Max concurrent requests",
+)
+@click.option(
+    "-r",
+    "--rate-limit",
+    default=0.0,
+    type=click.FloatRange(min=0.0),
+    help="Seconds between requests (0=unlimited)",
 )
 @click.option("--wordlist", default=None, help="Custom field wordlist for blind discovery")
 @click.option("--aggressive", is_flag=True, help="Enable aggressive modules (dos)")
@@ -116,6 +136,7 @@ def scan(
     header: tuple[str, ...],
     token_b: str | None,
     cookie: str | None,
+    cookie_b: str | None,
     proxy: str | None,
     modules: str | None,
     output: str | None,
@@ -147,6 +168,7 @@ def scan(
         headers=_primary_headers,
         headers_b=_second_identity_headers(token_b, _primary_headers),
         cookies=parse_cookies(cookie),
+        cookies_b=parse_cookies(cookie_b),
         proxy=proxy,
         timeout=timeout,
         concurrency=workers,
@@ -158,6 +180,10 @@ def scan(
         output_format=format,
         wordlist=wordlist,
         max_depth=cfg_file.get("max_depth", 3),
+        max_retries=cfg_file.get("max_retries", 3),
+        verify_ssl=cfg_file.get("verify_ssl", True),
+        follow_redirects=cfg_file.get("follow_redirects", True),
+        user_agent=cfg_file.get("user_agent", "gqlx/1.0 (GraphQL Security Scanner)"),
     )
 
     if aggressive:
@@ -240,7 +266,7 @@ def introspect(
                     args = ", ".join(f"{a.name}: {a.type_name}" for a in f.args)
                     console.print(f"  [cyan]{f.name}[/]({args}): {f.field_type}")
                 if len(schema.queries) > 30:
-                    console.print(f"  ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ and {len(schema.queries) - 30} more")
+                    console.print(f"  ... and {len(schema.queries) - 30} more")
 
             if output:
                 Path(output).write_text(_json.dumps(result.raw, indent=2), encoding="utf-8")
@@ -329,7 +355,7 @@ async def _autopwn_pipeline(
             for entry in ctx_info.discovery_log:
                 console.print(f"  [dim]>> {entry}[/]")
         console.print(Rule("[bold cyan]Phase 3 -- Operation Enumeration[/]"))
-        enumerator = Enumerator(req, org_id=ctx_info.org_id, concurrency=workers)
+        enumerator = Enumerator(req, org_id=ctx_info.org_id, concurrency=workers, schema=schema)
         mut_list = schema.mutations if mutations else []
 
         with console.status(
@@ -374,7 +400,7 @@ async def _autopwn_pipeline(
             _enum_findings.append(
                 _Finding(
                     module="info_disclosure",
-                    title=f"Sensitive Data Exposure ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â {qr.field_name}",
+                    title=f"Sensitive Data Exposure - {qr.field_name}",
                     severity=severity,
                     description=(
                         f"The operation '{qr.field_name}' returns sensitive data without "
@@ -495,7 +521,7 @@ async def _autopwn_pipeline(
 @click.option(
     "--token-b",
     default=None,
-    help="Second-identity token ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â enables true cross-user BOLA/tenant differential",
+    help="Second-identity token enables true cross-user BOLA/tenant differential",
 )
 @click.option("-H", "--header", multiple=True, help="Extra HTTP headers")
 @click.option("-x", "--proxy", default=None, help="HTTP proxy")
@@ -523,7 +549,7 @@ def autopwn(
     """
     Fully autonomous pentest: decode token, discover org/user context,
     enumerate all accessible operations, test tenant isolation, run all
-    vuln modules ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no manual input needed beyond URL + token.
+    vuln modules - no manual input needed beyond URL + token.
     """
     _print_banner()
     configure_logging(verbose)
@@ -634,7 +660,7 @@ def fullpwn(
 
     def _prompt(msg: str) -> str:
         hide = "password" in msg.lower() or "otp" not in msg.lower()
-        return click.prompt(f"  {msg}", hide_input=hide)
+        return str(click.prompt(f"  {msg}", hide_input=hide))
 
     try:
         if auth_flow == "auto":
@@ -655,8 +681,9 @@ def fullpwn(
             id_token = password_auth(app_cfg.client_id, app_cfg.region, email, password, timeout)
     except Exception as exc:
         console.print(f"  [red]Auth failed: {exc}[/]")
+        raise SystemExit(1) from exc
 
-    console.print("  [green]Authenticated ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â IdToken acquired[/]")
+    console.print("  [green]Authenticated - IdToken acquired[/]")
 
     asyncio.run(
         _autopwn_pipeline(
@@ -740,7 +767,7 @@ def enum(
             )
 
             # 2. Enumerate
-            enumerator = Enumerator(req, org_id=org_id, concurrency=workers)
+            enumerator = Enumerator(req, org_id=org_id, concurrency=workers, schema=schema)
             mut_list = schema.mutations if mutations else []
 
             with console.status(

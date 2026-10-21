@@ -240,7 +240,8 @@ class ContextDiscoverer:
             or not any(a.is_required for a in f.args)
         ]
         for schema_field in self_fields[:20]:
-            body = await self._fire(f"{{ {schema_field.name} }}")
+            selection = schema.build_selection(schema_field)
+            body = await self._fire(f"{{ {schema_field.name}{selection} }}")
             if not body:
                 continue
             self._try_extract(ctx, body, source=schema_field.name)
@@ -254,7 +255,8 @@ class ContextDiscoverer:
     async def _probe_zero_arg_queries(self, ctx: UserContext, schema: GraphQLSchema) -> None:
         zero_arg = [f for f in schema.queries if not f.args]
         for schema_field in zero_arg[:30]:
-            body = await self._fire(f"{{ {schema_field.name} }}")
+            selection = schema.build_selection(schema_field)
+            body = await self._fire(f"{{ {schema_field.name}{selection} }}")
             if not body:
                 continue
             self._try_extract(ctx, body, source=schema_field.name)
@@ -275,7 +277,8 @@ class ContextDiscoverer:
                     a.is_required and a.name != arg.name for a in schema_field.args
                 ):
                     body = await self._fire(
-                        f'{{ {schema_field.name}({arg.name}: "{ctx.user_id}") }}'
+                        f'{{ {schema_field.name}({arg.name}: "{ctx.user_id}")'
+                        f"{schema.build_selection(schema_field)} }}"
                     )
                     if body:
                         self._try_extract(ctx, body, source=f"{schema_field.name}(id)")
@@ -294,7 +297,12 @@ class ContextDiscoverer:
                 continue
             # Build with just non-org required args
             args = self._build_minimal_args(schema_field, ctx)
-            query = f"{{ {schema_field.name}({args}) }}" if args else f"{{ {schema_field.name} }}"
+            selection = schema.build_selection(schema_field)
+            query = (
+                f"{{ {schema_field.name}({args}){selection} }}"
+                if args
+                else f"{{ {schema_field.name}{selection} }}"
+            )
             body = await self._fire(query)
             if body:
                 self._try_extract(ctx, body, source=schema_field.name)
@@ -361,6 +369,8 @@ class ContextDiscoverer:
                 val = "10"
             elif t == "Boolean":
                 val = "true"
+            elif t in ("String", "ID", "AWSJSON", "AWSEmail"):
+                val = '"test"'
             elif t.startswith("enum") or (t and t[0].isupper()):
                 val = None
             else:

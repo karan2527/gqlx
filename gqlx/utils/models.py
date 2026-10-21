@@ -80,6 +80,7 @@ class GraphQLType(BaseModel):
     name: str
     kind: str  # OBJECT | SCALAR | ENUM | INPUT_OBJECT | INTERFACE | UNION
     fields: list[GraphQLField] = Field(default_factory=list)
+    input_fields: list[GraphQLArgument] = Field(default_factory=list)
     enum_values: list[str] = Field(default_factory=list)
     description: str | None = None
 
@@ -182,8 +183,8 @@ class ScanConfig(BaseModel):
     headers_b: dict[str, str] = Field(default_factory=dict)
     cookies: dict[str, str] = Field(default_factory=dict)
     proxy: str | None = None
-    timeout: int = 30
-    concurrency: int = 10
+    timeout: int = Field(default=30, gt=0)
+    concurrency: int = Field(default=10, gt=0)
     verbose: bool = False
     aggressive: bool = False
     modules: list[str] = Field(default_factory=list)
@@ -191,7 +192,12 @@ class ScanConfig(BaseModel):
     output_format: str = "html"
     wordlist: str | None = None
     max_depth: int = 3
-    rate_limit: float = 0.0
+    rate_limit: float = Field(default=0.0, ge=0.0)
+    max_retries: int = Field(default=3, ge=1)
+    verify_ssl: bool = True
+    follow_redirects: bool = True
+    user_agent: str = "gqlx/1.0 (GraphQL Security Scanner)"
+    cookies_b: dict[str, str] = Field(default_factory=dict)
 
 
 class ScanResult(BaseModel):
@@ -203,6 +209,9 @@ class ScanResult(BaseModel):
     gql_schema: GraphQLSchema | None = None
     modules_run: list[str] = Field(default_factory=list)
     introspection_enabled: bool = False
+    discovery_method: str = "none"
+    module_status: dict[str, str] = Field(default_factory=dict)
+    module_errors: dict[str, str] = Field(default_factory=dict)
     error: str | None = None
 
     def findings_by_severity(self) -> dict[str, list[Finding]]:
@@ -259,4 +268,6 @@ class RunContext:
 
     def second_identity_config(self) -> ScanConfig:
         """A ScanConfig copy that authenticates as the second identity."""
-        return self.config.model_copy(update={"headers": self.config.headers_b})
+        return self.config.model_copy(
+            update={"headers": self.config.headers_b, "cookies": self.config.cookies_b}
+        )

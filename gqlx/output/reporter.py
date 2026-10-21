@@ -73,7 +73,7 @@ class Reporter:
     # ------------------------------------------------------------------ #
 
     def _render_json(self) -> str:
-        return self.result.model_dump_json(indent=2, exclude={"schema": {"raw"}})
+        return self.result.model_dump_json(indent=2, exclude={"gql_schema": {"raw"}})
 
     def _render_markdown(self) -> str:
         env = _jinja_env()

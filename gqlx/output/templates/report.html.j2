@@ -72,6 +72,7 @@
       <div class="meta-card"><div class="label">Scan ID</div><div class="value" style="font-size:.8rem">{{ result.scan_id }}</div></div>
       <div class="meta-card"><div class="label">Started</div><div class="value">{{ result.started_at | fmt_date }}</div></div>
       <div class="meta-card"><div class="label">Introspection</div><div class="value">{{ "Enabled" if result.introspection_enabled else "Disabled" }}</div></div>
+      <div class="meta-card"><div class="label">Discovery Method</div><div class="value">{{ result.discovery_method }}</div></div>
       <div class="meta-card"><div class="label">Modules Run</div><div class="value" style="font-size:.8rem">{{ result.modules_run | join(", ") }}</div></div>
       <div class="meta-card"><div class="label">Generated</div><div class="value">{{ generated_at | fmt_date }}</div></div>
     </div>
@@ -138,6 +139,18 @@
   {% if not result.findings %}
   <div style="text-align:center;padding:3rem;color:var(--text-muted)">
     No findings detected. This does not guarantee the target is secure.
+  </div>
+  {% endif %}
+
+  {% if result.module_errors %}
+  <h2>MODULE FAILURES</h2>
+  <div class="finding">
+    <div class="finding-body" style="display:block">
+      <div class="section-content">This report is partial. Failed modules and their findings are listed below.</div>
+      {% for name, error in result.module_errors.items() %}
+      <div class="section-content"><strong>{{ name }}</strong>: {{ error }}</div>
+      {% endfor %}
+    </div>
   </div>
   {% endif %}
 
